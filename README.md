@@ -58,7 +58,7 @@ Python 3.10 or newer is recommended. Tkinter is supplied with most Python
 installations.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Zhiyang-Zeng/XPeak.git
 cd XPeak
 python3 -m pip install -r requirements.txt
 python3 run_xpeak.py
