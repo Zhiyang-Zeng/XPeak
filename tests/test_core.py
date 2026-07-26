@@ -5,7 +5,7 @@ import yaml
 import numpy as np
 
 from xpeak.core import Atom, UnitCell, atomic_scattering_factor, energy_kev_to_wavelength, enumerate_peaks, simulate_detector, wavelength_to_energy_kev, you_detector_frame, you_sample_rotation
-from xpeak.diffcalc_backend import MotorSolution, apply_motor_limits, calculate_ub_from_two_bisecting_reflections, hkl_to_motor_solutions, kappa_sample_rotation, motor_in_limits, motors_to_hkl, parse_constraints, parse_motor_limits, peak_surface_geometries, scan_alpha_beta, solve_symmetric_geometry, you_to_kappa
+from xpeak.diffcalc_backend import MotorSolution, apply_motor_limits, calculate_ub_from_two_bisecting_reflections, calculate_ub_from_two_reflections, diffcalc_reciprocal_matrix, hkl_to_motor_solutions, kappa_sample_rotation, kappa_to_you, motor_in_limits, motors_to_hkl, orientation_from_surface, parse_constraints, parse_motor_limits, peak_surface_geometries, scan_alpha_beta, scan_reflection_geometry, solution_angle, solve_symmetric_geometry, you_to_kappa
 from xpeak.phonons import PhononDataset, PhononMode, assign_irreps, displaced_atoms
 
 
@@ -56,11 +56,19 @@ class CoreTests(unittest.TestCase):
     def test_constraint_parser(self):
         self.assertEqual(parse_constraints("nu=0, mu=0, a_eq_b"), {"nu": 0.0, "mu": 0.0, "a_eq_b": True})
 
+    def test_incidence_equals_exit_constraint_alias(self):
+        expected = {"nu": 0.0, "mu": 0.0, "bin_eq_bout": True}
+        self.assertEqual(parse_constraints("nu=0, mu=0, betain=betaout"), expected)
+        self.assertEqual(parse_constraints("nu=0, mu=0, betaout=betain"), expected)
+
     def test_default_motor_limit_parser_and_filter(self):
         limits = parse_motor_limits("delta=0:180, chi=0:180")
         self.assertEqual(limits, {"delta": (0.0, 180.0), "chi": (0.0, 180.0)})
         solutions = hkl_to_motor_solutions(UnitCell(4, 4, 4), (0, 0, 1), 1.0, {"nu": 0, "mu": 0, "a_eq_b": True}, motor_limits=limits)
         self.assertTrue(all(motor_in_limits(solution, limits) for solution in solutions))
+
+    def test_blank_motor_limits_match_unrestricted_diffcalc_default(self):
+        self.assertEqual(parse_motor_limits(""), {})
 
     def test_motor_angles_are_cut_into_zero_to_360_range(self):
         solution = MotorSolution(-10, 20, -30, -40, 50, -60, {})
@@ -74,9 +82,21 @@ class CoreTests(unittest.TestCase):
         np.testing.assert_allclose(u_matrix, np.eye(3), atol=1e-7)
         np.testing.assert_allclose(ub_matrix, 2 * np.pi * np.eye(3), atol=1e-7)
 
+    def test_ub_from_two_general_reflections(self):
+        references = [
+            ((0, 0, 1), (0, 60, 0, 30, 90, 0)),
+            ((0, 1, 1), (0, 90, 0, 45, 45, 90)),
+        ]
+        u_matrix, ub_matrix = calculate_ub_from_two_reflections(UnitCell(1, 1, 1), 1.0, references)
+        np.testing.assert_allclose(u_matrix, np.eye(3), atol=1e-7)
+        np.testing.assert_allclose(ub_matrix, 2 * np.pi * np.eye(3), atol=1e-7)
+
     def test_kappa_conversion_reconstructs_you_orientation(self):
         eta, chi, phi = 20.0, 35.0, -14.0
         kp = you_to_kappa(eta, chi, phi, 50.0)
+        self.assertTrue(0.0 <= kp.komega <= 360.0)
+        self.assertTrue(0.0 <= kp.kappa <= 180.0)
+        self.assertTrue(0.0 <= kp.kphi <= 360.0)
         expected = you_sample_rotation(0, eta, chi, phi)
         actual = kappa_sample_rotation(kp.komega, kp.kappa, kp.kphi, 50.0)
         np.testing.assert_allclose(actual, expected, atol=1e-8)
@@ -85,6 +105,32 @@ class CoreTests(unittest.TestCase):
         kp = you_to_kappa(12.0, 30.0, -8.0, 90.0)
         actual = kappa_sample_rotation(kp.komega, kp.kappa, kp.kphi, 90.0)
         np.testing.assert_allclose(actual, you_sample_rotation(0, 12, 30, -8), atol=1e-8)
+
+    def test_kappa_to_you_round_trip(self):
+        source = (18.0, 42.0, -27.0)
+        kp = you_to_kappa(*source, 50.0)
+        you = kappa_to_you(kp.komega, kp.kappa, kp.kphi, 50.0)
+        np.testing.assert_allclose(
+            you_sample_rotation(0, you.eta, you.chi, you.phi),
+            you_sample_rotation(0, *source),
+            atol=1e-8,
+        )
+
+    def test_u_matrix_from_surface_mounting(self):
+        cell = UnitCell(4, 5, 6)
+        u_matrix = orientation_from_surface(cell, (0, 0, 1), 30.0)
+        normal = u_matrix @ (diffcalc_reciprocal_matrix(cell) @ np.array([0.0, 0.0, 1.0]))
+        normal /= np.linalg.norm(normal)
+        np.testing.assert_allclose(normal, [0, 0, 1], atol=1e-10)
+        np.testing.assert_allclose(u_matrix.T @ u_matrix, np.eye(3), atol=1e-10)
+        from diffcalc.ub.calc import UBCalculation
+        ubcalc = UBCalculation("surface convention test")
+        ubcalc.set_lattice("crystal", cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma)
+        ubcalc.set_u(u_matrix)
+        ubcalc.surf_nhkl = (0, 0, 1)
+        surf_nphi = np.asarray(ubcalc.surf_nphi, dtype=float).reshape(3)
+        surf_nphi /= np.linalg.norm(surf_nphi)
+        np.testing.assert_allclose(surf_nphi, [0, 0, 1], atol=1e-10)
 
     def test_surface_incidence_exit_geometry(self):
         result = peak_surface_geometries(UnitCell(4, 4, 4), [(1, 1, 1)], 1.0, {"nu": 0, "mu": 0, "a_eq_b": True}, (0, 0, 1), 5.0)
@@ -98,6 +144,12 @@ class CoreTests(unittest.TestCase):
         for requested_alpha, solution in rows:
             self.assertAlmostEqual(solution.virtual["alpha"], requested_alpha, places=5)
 
+    def test_general_motor_angle_scan(self):
+        rows = scan_reflection_geometry(UnitCell(4, 4, 4), (1, 1, 1), 1.0, "phi", [0.0, 10.0], {"nu": 0, "mu": 0}, (0, 0, 1))
+        self.assertTrue(rows)
+        for requested_phi, solution in rows:
+            self.assertAlmostEqual(solution_angle(solution, "phi"), requested_phi, places=5)
+
     def test_specular_alpha_scan_returns_bragg_angle(self):
         rows = scan_alpha_beta(UnitCell(4, 4, 4), (0, 0, 1), 1.0, {"nu": 0, "mu": 0}, (0, 0, 1), np.linspace(1, 15, 8))
         self.assertTrue(rows)
@@ -108,7 +160,7 @@ class CoreTests(unittest.TestCase):
     def test_specular_equal_alpha_beta_solver(self):
         solutions = solve_symmetric_geometry(UnitCell(4, 4, 4), (0, 0, 1), 1.0, {"nu": 0, "mu": 0}, (0, 0, 1))
         self.assertTrue(solutions)
-        self.assertTrue(all(abs(s.virtual["alpha"] - s.virtual["beta"]) < 1e-7 for s in solutions))
+        self.assertTrue(all(abs(s.virtual["betain"] - s.virtual["betaout"]) < 1e-7 for s in solutions))
 
     def test_gamma_mode_displacement_mass_weighting(self):
         mode = PhononMode(0, 0, (0, 0, 0), 1.0, np.array([[1 + 0j, 0j, 0j]]))

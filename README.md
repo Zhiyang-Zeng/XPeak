@@ -1,5 +1,8 @@
 # XPeak
 
+Current release: **Version 2.1**. See [CHANGELOG.md](CHANGELOG.md) for the
+complete list of additions and corrections.
+
 XPeak is a Python desktop application for planning single-crystal X-ray
 diffraction experiments. It combines structure-factor calculations, phonon-mode
 analysis, six-circle diffractometer geometry, and a virtual area detector in one
@@ -28,17 +31,20 @@ not a replacement for a beamline-specific control or resolution package.
   function of a frozen-phonon normal coordinate.
 - Identify peaks that are especially sensitive to a chosen structural mode.
 
-### 3. Explore incidence and exit geometry
+### 3. Explore constrained reflection geometry
 
+- Scan a detector, sample, or virtual angle while fixing two other Diffcalc
+  constraints.
+- Plot any available motor or virtual angle against the scanned coordinate and
+  display all accessible solution branches.
 - For a selected reflection and crystal-surface normal, calculate the X-ray
-  incidence angle `α` and exit angle `β`.
-- Scan `α` and display all accessible `β` branches and motor solutions.
-- Solve the symmetric condition `α = β` directly.
+  incidence angle `betain` and exit angle `betaout`.
+- Solve the symmetric condition `betain = betaout` directly.
 - Inspect the sample, crystallographic axes, beams, scattering vector, and
   detector in an interactive 3D view.
 
-Here `α` and `β` are measured relative to the sample surface. For a specular
-reflection, exact elastic diffraction fixes `α = β = θ`; `α` cannot be varied
+Here `betain` and `betaout` are measured relative to the sample surface. For a specular
+reflection, exact elastic diffraction fixes `betain = betaout = θ`; `betain` cannot be varied
 independently while remaining on the same reciprocal-lattice point.
 
 ### 4. Run a virtual diffractometer experiment
@@ -46,8 +52,18 @@ independently while remaining on the same reciprocal-lattice point.
 - Solve `(h k l) →` six-circle motor positions with
   [Diffcalc Core](https://github.com/DiamondLightSource/diffcalc).
 - Calculate the inverse mapping from current motor angles to `(h k l)`.
+- Continuously display the scattering vector from the current motor condition as
+  `Q = (H,K,L)` in reciprocal-lattice units.
 - Display both the You Eulerian angles and the corresponding configurable kappa
   goniometer position.
+- Enter the physical sample orientation as kappa-cradle angles. XPeak converts
+  them internally to You Eulerian angles for Diffcalc and reports both forms.
+- The motor box presents editable You Eulerian and kappa-convention rows.
+  **Set Eulerian** and **Set Kappa** convert the entered row into the other
+  convention and refresh the experiment geometry.
+- The default physical kappa limits are `κω = 0–360°`, `κ = 0–180°`, and
+  `κφ = 0–360°`. Conversion and Diffcalc application reject orientations that
+  cannot be represented inside this cradle range.
 - Determine `U` and `UB` from two measured reflections.
 - Simulate where accessible reflections appear on a flat 2D detector.
 - Explore the complete instrument geometry in a second interactive 3D view.
@@ -71,7 +87,8 @@ A typical workflow is:
 3. Calculate and filter the reflection table.
 4. Optionally load `band.yaml` and `irreps.yaml`, select a phonon mode, and add
    reflections to the monitored list.
-5. Send a reflection to **Alpha-beta geometry** to inspect surface accessibility.
+5. Send a reflection to **Reflection geometry** to scan an angle or inspect
+   surface accessibility.
 6. Send an accessible solution to **Virtual experiment** and inspect the detector
    image and both motor readouts.
 
@@ -100,6 +117,26 @@ The intensities are useful for comparing reflections within the model. Absolute
 intensities require experimental scale factors and corrections for effects such
 as absorption, extinction, footprint, detector efficiency, and instrumental
 resolution.
+
+## B, U, and UB matrices
+
+The crystal panel displays the Busing–Levy reciprocal-lattice matrix `B` in
+Å⁻¹ after the lattice is loaded or the peak search is refreshed. `B` is fixed
+by the unit-cell parameters.
+
+The Reflection geometry panel displays the active orientation matrix `U`. A
+mounting orientation can be defined there using a surface-normal HKL and an
+in-plane rotation: the surface normal is placed along `+z` in the zero-motor
+phi frame, while the projected `a*` direction is placed along `+x` at zero
+in-plane rotation (with the first usable reciprocal basis direction used if
+`a*` is parallel to the normal). Positive in-plane rotation is toward `+y`.
+
+The Virtual experiment can alternatively determine `U` and `UB = U B` from two
+general measured reflections. For each reflection, enter `(h,k,l)` and the full
+measured kappa motor position `μ, δ, ν, κω, κ, κφ`; no bisecting-geometry
+assumption is made. XPeak converts each kappa position to the equivalent You
+angles before calculating UB. All geometry, motor, detector, and Q calculations
+use the currently displayed active `U`.
 
 ## Phonon convention
 
@@ -143,15 +180,13 @@ In this convention, `η`, `φ`, and `δ` are left-handed motor angles, while
 `μ`, `χ`, and `ν` are right-handed. The detector's in-plane `u` and `v` axes
 rotate with the detector arm.
 
-### Default motor ranges
+### Motor ranges
 
-```text
-μ=0:360, δ=0:180, ν=0:360, η=0:360, χ=0:180, φ=0:360
-```
-
-The ranges are inclusive and can be edited as `motor=min:max` in degrees.
-Periodically equivalent angles are first mapped into the requested interval;
-solutions that remain outside a motor range are excluded.
+The motor-limit field is blank by default, matching Diffcalc's unrestricted
+mathematical motor positions. Optional beamline limits can be entered as
+`motor=min:max` in degrees, for example `delta=0:180, chi=0:180`. The ranges
+are inclusive. Periodically equivalent angles are first mapped into a requested
+interval; solutions that remain outside it are excluded.
 
 ### Diffcalc constraints
 
@@ -159,12 +194,16 @@ Enter a target reflection and three independent Diffcalc constraints, for
 example
 
 ```text
-ν=0, μ=0, a_eq_b
+ν=0, μ=0, betain=betaout
 ```
 
 then select **Solve HKL → motors**. The returned table may contain several
-kinematically equivalent sectors. Select the sector compatible with the actual
-beamline limits before applying it to the detector simulation.
+kinematically equivalent sectors and reports them as You Eulerian angles
+`μ, δ, ν, η, χ, φ`. Select the sector compatible with the actual beamline
+limits before applying it to the detector simulation. XPeak translates the
+readable `betain=betaout` expression to Diffcalc's `bin_eq_bout` constraint;
+this is different from `a_eq_b`, which constrains the virtual `alpha` and
+`beta` angles.
 
 ### UB matrix from two reflections
 
@@ -177,7 +216,7 @@ measurement:
 ```
 
 The resulting orientation matrix is used by motor solving, inverse HKL
-calculation, alpha-beta scans, detector simulation, and both 3D views. This
+calculation, constrained reflection scans, detector simulation, and both 3D views. This
 assumption must match the geometry used when the two references were measured.
 
 ### Kappa readout
@@ -205,6 +244,16 @@ unreachable instead of being approximated.
 Changing a peak or motor solution does not reset the camera. The sample's
 oriented `a`, `b`, and `c` directions and the positive laboratory axes are
 displayed for reference.
+
+The dedicated **You convention** tab displays the published diffractometer
+geometry supplied with XPeak. It provides a large reference view of the
+laboratory axes, incident beam, four sample circles (`μ`, `η`, `χ`, `φ`), and
+two detector circles (`δ`, `ν`) while setting up an experiment.
+
+In the virtual detector image, detector `+x` (the `u` pixel coordinate) points
+right and detector `+y` (the `v` pixel coordinate) points downward. The default
+mosaic acceptance is `0.01°`. Cyan and green direction arrows are drawn both
+on the 2D detector image and on the detector plane in the 3D view.
 
 ## Structure-file support
 
